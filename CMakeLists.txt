@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 2.8)
+project(my_test)
+find_package(OpenCV REQUIRED)
+find_package(MPI REQUIRED)
+include_directories(${OpenCV_INCLUDE_DIRS} ${MPI_CXX_INCLUDE_PATH})
+add_executable(sobel_mpi sobel_mpi.cpp)
+target_link_libraries(sobel_mpi ${OpenCV_LIBS} ${MPI_CXX_LIBRARIES})
+#add_executable(sobel_upc sobel.upc)
