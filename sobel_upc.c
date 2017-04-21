@@ -1,15 +1,26 @@
-#include <opencv2/opencv.hpp>
+/* Variables/Routines exported to C/C++ routines */
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <sys/time.h>
-#include <mpi.h>
+#include <upc.h>
+#include <upc_strict.h>
+#include "sobel_upc.h"
 
-#define NUM_IMAGES	17
+#define NUM_IMAGES		17
+#define INPUT_IMAGE_DIM	512
+//#define CHUNKS_PER_THREAD (INPUT_IMAGE_DIM / THREADS)
+#define PAD_IMAGE_DIM	(INPUT_IMAGE_DIM + 2)
 
-static cv::Mat image;
+//shared [PAD_IMAGE_DIM * (CHUNKS_PER_THREAD * THREADS + 2)] uint8_t input_pix_mat[PAD_IMAGE_DIM * (CHUNKS_PER_THREAD * THREADS + 2)];
+//shared [INPUT_IMAGE_DIM  * CHUNKS_PER_THREAD * THREADS] uint8_t output_pix_mat[INPUT_IMAGE_DIM * CHUNKS_PER_THREAD * THREADS];
+//uint8_t input_pix_mat[PAD_IMAGE_DIM * PAD_IMAGE_DIM];
+
 static const int8_t g_x[] = {-1, 0, 1, -2, 0, 2, -1, 0, 1};
 static const int8_t g_y[] = {-1, -2, -1, 0, 0, 0, 1, 2, 1};
+uint8_t *input_pix_mat;
+uint8_t *output_pix_mat;
 static const char *image_names[] = {
 	"../standard_test_images/lena_gray_512.tif",
 	"../standard_test_images/jetplane.tif",
@@ -33,29 +44,29 @@ static const char *image_names[] = {
 static double timer() {
     struct timeval tp;
     gettimeofday(&tp, NULL);
-    return ((double) (tp.tv_sec) + 1e-6 * tp.tv_usec);
 
+    return ((double) (tp.tv_sec) + 1e-6 * tp.tv_usec);
 }
 
-inline uint8_t apply_filt(int x, int y) {
+uint8_t apply_filt(int x, int y) {
 	int16_t temp_x = 0;
 	int16_t temp_y = 0;
 	int16_t magnitude;
 
-	temp_x = g_x[0] * image.data[(y - 1) * image.cols + x - 1] + g_x[1] *
-		image.data[(y - 1) * image.cols + x] + g_x[2] * image.data[(y - 1) *
-		image.cols + x + 1] + g_x[3] * image.data[y * image.cols + x - 1] +
-		g_x[4] * image.data[y * image.cols + x] + g_x[5] * image.data[y *
-		image.cols + x + 1] + g_x[6] * image.data[(y + 1) * image.cols + x - 1]
-		+ g_x[7] * image.data[(y + 1) * image.cols + x] + g_x[8] *
-		image.data[(y + 1) * image.cols + x + 1];
-	temp_y = g_y[0] * image.data[(y - 1) * image.cols + x - 1] + g_y[1] *
-		image.data[(y - 1) * image.cols + x] + g_y[2] * image.data[(y - 1) *
-		image.cols + x + 1] + g_y[3] * image.data[y * image.cols + x - 1] +
-		g_y[4] * image.data[y * image.cols + x] + g_y[5] * image.data[y *
-		image.cols + x + 1] + g_y[6] * image.data[(y + 1) * image.cols + x - 1]
-		+ g_y[7] * image.data[(y + 1) * image.cols + x] + g_y[8] *
-		image.data[(y + 1) * image.cols + x + 1];
+	temp_x = g_x[0] * input_pix_mat[(y - 1) * PAD_IMAGE_DIM + x - 1] + g_x[1] *
+		input_pix_mat[(y - 1) * PAD_IMAGE_DIM + x] + g_x[2] * input_pix_mat[(y - 1) *
+		PAD_IMAGE_DIM + x + 1] + g_x[3] * input_pix_mat[y * PAD_IMAGE_DIM + x - 1] +
+		g_x[4] * input_pix_mat[y * PAD_IMAGE_DIM + x] + g_x[5] * input_pix_mat[y *
+		PAD_IMAGE_DIM + x + 1] + g_x[6] * input_pix_mat[(y + 1) * PAD_IMAGE_DIM + x - 1]
+		+ g_x[7] * input_pix_mat[(y + 1) * PAD_IMAGE_DIM + x] + g_x[8] *
+		input_pix_mat[(y + 1) * PAD_IMAGE_DIM + x + 1];
+	temp_y = g_y[0] * input_pix_mat[(y - 1) * PAD_IMAGE_DIM + x - 1] + g_y[1] *
+		input_pix_mat[(y - 1) * PAD_IMAGE_DIM + x] + g_y[2] * input_pix_mat[(y - 1) *
+		PAD_IMAGE_DIM + x + 1] + g_y[3] * input_pix_mat[y * PAD_IMAGE_DIM + x - 1] +
+		g_y[4] * input_pix_mat[y * PAD_IMAGE_DIM + x] + g_y[5] * input_pix_mat[y *
+		PAD_IMAGE_DIM + x + 1] + g_y[6] * input_pix_mat[(y + 1) * PAD_IMAGE_DIM + x - 1]
+		+ g_y[7] * input_pix_mat[(y + 1) * PAD_IMAGE_DIM + x] + g_y[8] *
+		input_pix_mat[(y + 1) * PAD_IMAGE_DIM + x + 1];
 
 	// Normalize the gradient to 8 bits
 	temp_x = abs(temp_x);
@@ -68,39 +79,42 @@ inline uint8_t apply_filt(int x, int y) {
 
 int main(int argc, char **argv) {
 	double total_time = 0;
-    int rank, num_tasks;
-	MPI_Init(&argc, &argv);
-	MPI_Comm_size(MPI_COMM_WORLD, &num_tasks);
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	MPI_Status stat;
+
+	input_pix_mat = calloc(PAD_IMAGE_DIM * PAD_IMAGE_DIM, sizeof(*input_pix_mat));
+	output_pix_mat = calloc(INPUT_IMAGE_DIM * INPUT_IMAGE_DIM, sizeof(*output_pix_mat));
 
 	for (int i = 0; i < NUM_IMAGES; i++) {
-		image = cv::imread(image_names[i], cv::IMREAD_GRAYSCALE);
+		get_input_mat(input_pix_mat, image_names[i]);
 
-		if (!image.data) {
+		if (input_pix_mat == NULL) {
 			printf("No image data \n");
 			return -1;
 		}
 
+		upc_barrier;
 
-		cv::Mat padded;
-		cv::Mat output = cv::Mat(image.rows, image.cols, CV_8U);
-		int padding = 1;
-		copyMakeBorder(image, image, padding, padding, padding, padding, cv::BORDER_CONSTANT, cv::BORDER_DEFAULT);
-		double elt = timer();
+		double elt;
+		if (MYTHREAD == 0) {
+			elt = timer();
+		}
 
-		for (int y = (image.rows - 2) * (float) rank / num_tasks + 1; y < (image.rows - 2) * (float) (rank + 1) / num_tasks + 1; y++) {
-			for (int x = 1; x < image.cols - 1; x++) {
-				output.data[(y - 1) * output.cols + x - 1] = apply_filt(x, y);
+		upc_forall(int y = 1; y < PAD_IMAGE_DIM - 1; y++; &input_pix_mat[y * PAD_IMAGE_DIM]) {
+			for (int x = 1; x < PAD_IMAGE_DIM - 1; x++) {
+				output_pix_mat[(y - 1) * INPUT_IMAGE_DIM + x - 1] = apply_filt(x, y);
 			}
 		}
 
-		elt = timer() - elt;
-		total_time += elt;
+		upc_barrier;
+		if (MYTHREAD == 0) {
+			set_output_mat(output_pix_mat);
+			elt = timer() - elt;
+			total_time += elt;
+		}
 	}
 
-	fprintf(stderr, "Time taken: %3.3lf s.\n", total_time);
-	MPI_Finalize();
+	if (MYTHREAD == 0) {
+		fprintf(stderr, "Time taken: %3.3lf s.\n", total_time);
+	}
 
 	return 0;
 }
